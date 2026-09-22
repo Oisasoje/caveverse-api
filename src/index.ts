@@ -1,4 +1,4 @@
-﻿import "dotenv/config";
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -14,12 +14,31 @@ import onboardingRoute from "./routes/onboarding/index";
 const app = express();
 const PORT = process.env.PORT ?? 4000;
 
+// Trust reverse proxy (Vercel, AWS, Cloudflare) for rate limiting & secure cookies
+app.set("trust proxy", 1);
+
 // ── Security & parsing ──────────────────────────────────────────────────────
 app.use(helmet());
-app.use(cors({
-  origin: process.env.CLIENT_ORIGIN ?? "http://localhost:3000",
-  credentials: true,
-}));
+
+const envOrigins = process.env.CLIENT_ORIGIN
+  ? process.env.CLIENT_ORIGIN.split(",").map((s) => s.trim())
+  : [];
+const allowedOrigins = Array.from(new Set([...envOrigins, "http://localhost:3000"]));
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
+      if (!origin) return callback(null, true);
+      const isAllowed =
+        allowedOrigins.includes(origin) ||
+        origin.endsWith(".vercel.app") ||
+        origin.startsWith("http://localhost:");
+      callback(null, isAllowed);
+    },
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 // ── Rate limiting on auth routes (100 req / 15 min per IP) ──────────────────
@@ -55,8 +74,10 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ error: "Internal server error" });
 });
 
-app.listen(PORT, () => {
-  console.log(`caveverse-api running on http://localhost:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`caveverse-api running on http://localhost:${PORT}`);
+  });
+}
 
 export default app;
