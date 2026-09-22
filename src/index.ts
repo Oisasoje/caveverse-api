@@ -59,6 +59,19 @@ app.use("/auth/logout", logoutRoute);
 app.use("/auth/me", meRoute);
 app.use("/onboarding", onboardingRoute);
 
+// ── Root status ───────────────────────────────────────────────────────────────
+app.get("/", (_req, res) => {
+  res.json({
+    name: "caveverse-api",
+    status: "online",
+    endpoints: {
+      health: "/health",
+      auth: "/auth/*",
+      onboarding: "/onboarding",
+    },
+  });
+});
+
 // ── Health check ─────────────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
   let dbStatus = "unchecked";
