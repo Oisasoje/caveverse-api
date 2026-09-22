@@ -10,6 +10,7 @@ import refreshRoute from "./routes/auth/refresh";
 import logoutRoute from "./routes/auth/logout";
 import meRoute from "./routes/auth/me";
 import onboardingRoute from "./routes/onboarding/index";
+import { prisma } from "./lib/prisma";
 
 const app = express();
 const PORT = process.env.PORT ?? 4000;
@@ -59,8 +60,32 @@ app.use("/auth/me", meRoute);
 app.use("/onboarding", onboardingRoute);
 
 // ── Health check ─────────────────────────────────────────────────────────────
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+app.get("/health", async (_req, res) => {
+  let dbStatus = "unchecked";
+  let dbError = null;
+
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    dbStatus = "connected";
+  } catch (e: any) {
+    dbStatus = "error";
+    dbError = e.message;
+  }
+
+  res.json({
+    status: dbStatus === "connected" ? "ok" : "degraded",
+    env: {
+      hasDbUrl: Boolean(process.env.DATABASE_URL),
+      hasAccessSecret: Boolean(process.env.ACCESS_TOKEN_SECRET),
+      hasRefreshSecret: Boolean(process.env.REFRESH_TOKEN_SECRET),
+      clientOrigin: process.env.CLIENT_ORIGIN ?? null,
+    },
+    database: {
+      status: dbStatus,
+      error: dbError,
+    },
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ── 404 handler ──────────────────────────────────────────────────────────────
@@ -70,8 +95,11 @@ app.use((_req, res) => {
 
 // ── Global error handler ─────────────────────────────────────────────────────
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("[Error]", err.message);
-  res.status(500).json({ error: "Internal server error" });
+  console.error("[Error]", err);
+  res.status(500).json({
+    error: "Internal server error",
+    message: err.message,
+  });
 });
 
 if (!process.env.VERCEL) {

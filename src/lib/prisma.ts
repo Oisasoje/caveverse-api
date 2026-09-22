@@ -10,9 +10,12 @@ const globalForPrisma = globalThis as unknown as {
 
 function createPrismaClient(): PrismaClient {
   const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error("DATABASE_URL environment variable is not defined");
+  }
   const pool = new Pool({
     connectionString,
-    ssl: connectionString?.includes("sslmode=require") ? { rejectUnauthorized: false } : undefined,
+    ssl: connectionString.includes("sslmode=require") ? { rejectUnauthorized: false } : undefined,
   });
   const adapter = new PrismaPg(pool);
   globalForPrisma.pool = pool;
