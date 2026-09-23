@@ -24,6 +24,10 @@ const updateBuildSchema = z.object({
   description: z.string().max(1000).nullable().optional(),
 });
 
+const saveStepSchema = z.object({
+  answer: z.string().min(1, "Answer is required"),
+});
+
 /**
  * GET /builds
  * Fetch all builds for the authenticated user.
@@ -79,6 +83,11 @@ router.get("/:id", requireAuth, async (req: AuthRequest, res: Response): Promise
 
   const build = await prisma.build.findFirst({
     where: { id, userId },
+    include: {
+      steps: {
+        orderBy: { stepNumber: "asc" },
+      },
+    },
   });
 
   if (!build) {
@@ -143,5 +152,146 @@ router.delete("/:id", requireAuth, async (req: AuthRequest, res: Response): Prom
 
   res.json({ message: "Build deleted successfully" });
 });
+
+/**
+ * GET /builds/:id/steps
+ * Fetch all completed steps for a specific build.
+ */
+router.get("/:id/steps", requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.user!.userId;
+  const id = req.params.id as string;
+
+  const build = await prisma.build.findFirst({
+    where: { id, userId },
+  });
+
+  if (!build) {
+    res.status(404).json({ error: "Build not found" });
+    return;
+  }
+
+  const steps = await prisma.buildStep.findMany({
+    where: { buildId: id },
+    orderBy: { stepNumber: "asc" },
+  });
+
+  res.json({ steps });
+});
+
+/**
+ * GET /builds/:id/steps/:step
+ * Fetch a specific step answer for a build.
+ */
+router.get("/:id/steps/:step", requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.user!.userId;
+  const id = req.params.id as string;
+  const stepNumber = parseInt(req.params.step as string, 10);
+
+  if (isNaN(stepNumber) || stepNumber < 1 || stepNumber > 10) {
+    res.status(400).json({ error: "Invalid step number (must be 1-10)" });
+    return;
+  }
+
+  const build = await prisma.build.findFirst({
+    where: { id, userId },
+  });
+
+  if (!build) {
+    res.status(404).json({ error: "Build not found" });
+    return;
+  }
+
+  const stepRecord = await prisma.buildStep.findUnique({
+    where: {
+      buildId_stepNumber: {
+        buildId: id,
+        stepNumber,
+      },
+    },
+  });
+
+  res.json({
+    step: stepRecord
+      ? {
+          id: stepRecord.id,
+          step: stepRecord.stepNumber,
+          answer: stepRecord.answer,
+          createdAt: stepRecord.createdAt,
+          updatedAt: stepRecord.updatedAt,
+        }
+      : null,
+  });
+});
+
+/**
+ * POST /builds/:id/steps/:step
+ * Save/upsert a step answer and advance the build stage to n + 1 (capped at 10).
+ */
+router.post(
+  "/:id/steps/:step",
+  requireAuth,
+  validate(saveStepSchema),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    const userId = req.user!.userId;
+    const id = req.params.id as string;
+    const stepNumber = parseInt(req.params.step as string, 10);
+    const { answer } = req.body as z.infer<typeof saveStepSchema>;
+
+    if (isNaN(stepNumber) || stepNumber < 1 || stepNumber > 10) {
+      res.status(400).json({ error: "Invalid step number (must be 1-10)" });
+      return;
+    }
+
+    const build = await prisma.build.findFirst({
+      where: { id, userId },
+    });
+
+    if (!build) {
+      res.status(404).json({ error: "Build not found" });
+      return;
+    }
+
+    // Upsert the step answer
+    const stepRecord = await prisma.buildStep.upsert({
+      where: {
+        buildId_stepNumber: {
+          buildId: id,
+          stepNumber,
+        },
+      },
+      update: {
+        answer: answer.trim(),
+      },
+      create: {
+        buildId: id,
+        stepNumber,
+        answer: answer.trim(),
+      },
+    });
+
+    // Advance the build stage to n + 1 (capped at 10), without downgrading if editing a previous step
+    const nextStage = Math.min(10, Math.max(build.stage, stepNumber === 10 ? 10 : stepNumber + 1));
+    let updatedBuild = build;
+
+    if (nextStage !== build.stage) {
+      updatedBuild = await prisma.build.update({
+        where: { id },
+        data: { stage: nextStage },
+      });
+    }
+
+    res.json({
+      success: true,
+      step: {
+        id: stepRecord.id,
+        step: stepRecord.stepNumber,
+        answer: stepRecord.answer,
+        createdAt: stepRecord.createdAt,
+        updatedAt: stepRecord.updatedAt,
+      },
+      build: updatedBuild,
+    });
+  }
+);
 
 export default router;

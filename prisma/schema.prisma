@@ -41,17 +41,31 @@ model RefreshToken {
 }
 
 model Build {
-  id          String   @id @default(cuid())
+  id          String      @id @default(cuid())
   userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   name        String
   industry    String
-  icon        String   @default("laptop")
-  color       String   @default("paper")
-  stage       Int      @default(1)
+  icon        String      @default("laptop")
+  color       String      @default("paper")
+  stage       Int         @default(1)
   description String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  steps       BuildStep[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
 
   @@index([userId])
+}
+
+model BuildStep {
+  id         String   @id @default(cuid())
+  buildId    String
+  build      Build    @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  stepNumber Int
+  answer     String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([buildId, stepNumber])
+  @@index([buildId])
 }
