@@ -10,6 +10,7 @@ import refreshRoute from "./routes/auth/refresh";
 import logoutRoute from "./routes/auth/logout";
 import meRoute from "./routes/auth/me";
 import onboardingRoute from "./routes/onboarding/index";
+import buildsRoute from "./routes/builds/index";
 import { prisma } from "./lib/prisma";
 
 const app = express();
@@ -58,6 +59,8 @@ app.use("/auth/refresh", authLimiter, refreshRoute);
 app.use("/auth/logout", logoutRoute);
 app.use("/auth/me", meRoute);
 app.use("/onboarding", onboardingRoute);
+app.use("/builds", buildsRoute);
+app.use("/build", buildsRoute);
 
 // ── Root status ───────────────────────────────────────────────────────────────
 app.get("/", (_req, res) => {
@@ -68,6 +71,7 @@ app.get("/", (_req, res) => {
       health: "/health",
       auth: "/auth/*",
       onboarding: "/onboarding",
+      builds: "/builds",
     },
   });
 });
