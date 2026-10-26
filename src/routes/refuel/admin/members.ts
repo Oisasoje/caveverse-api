@@ -8,7 +8,7 @@ import {
   RefuelAuthRequest,
 } from "../../../middleware/refuelAuth";
 import { prisma } from "../../../lib/prisma";
-import { RefuelMembershipStatus } from "@prisma/client";
+import { RefuelMembershipStatus, RefuelRole, RefuelMember } from "@prisma/client";
 
 const router = Router();
 
@@ -55,9 +55,50 @@ router.get(
   }
 );
 
+async function resolveApprovalAdminId(
+  assignedToId?: string | null,
+  approvingAdmin?: RefuelMember
+): Promise<string | null> {
+  if (assignedToId) {
+    const targetAdmin = await prisma.refuelMember.findUnique({
+      where: { id: assignedToId },
+    });
+    if (!targetAdmin) {
+      throw new Error("Assigned admin member was not found.");
+    }
+    if (targetAdmin.role !== RefuelRole.ADMIN) {
+      throw new Error(
+        `Cannot assign member to a ${targetAdmin.role}. Members can only be assigned to an ADMIN.`
+      );
+    }
+    return targetAdmin.id;
+  }
+
+  // If approving admin is a regular ADMIN, assign to them
+  if (approvingAdmin && approvingAdmin.role === RefuelRole.ADMIN) {
+    return approvingAdmin.id;
+  }
+
+  // Otherwise (e.g. approvingAdmin is SUPER_ADMIN), find least-loaded regular ADMIN
+  const leastLoaded = await prisma.refuelMember.findFirst({
+    where: {
+      role: RefuelRole.ADMIN,
+      status: RefuelMembershipStatus.ACTIVE,
+    },
+    select: { id: true },
+    orderBy: [
+      { assignedMembers: { _count: "asc" } },
+      { joinedAt: "asc" },
+      { id: "asc" },
+    ],
+  });
+
+  return leastLoaded?.id ?? null;
+}
+
 /**
  * POST /refuel/admin/members/:id/approve
- * Approve a requested membership and optionally assign to an admin.
+ * Approve a requested membership and assign to an admin (defaults to least-loaded regular ADMIN if approving admin is SUPER_ADMIN).
  */
 router.post(
   "/:id/approve",
@@ -86,7 +127,13 @@ router.post(
         return;
       }
 
-      const assignedAdminId = assignedToId || admin.id;
+      let assignedAdminId: string | null = null;
+      try {
+        assignedAdminId = await resolveApprovalAdminId(assignedToId, admin);
+      } catch (validationErr: any) {
+        res.status(400).json({ error: validationErr.message });
+        return;
+      }
 
       const updated = await prisma.$transaction(async (tx) => {
         const approved = await tx.refuelMember.update({
@@ -124,6 +171,76 @@ router.post(
     } catch (err: any) {
       console.error("[ApproveMemberError]", err);
       res.status(500).json({ error: "Failed to approve member." });
+    }
+  }
+);
+
+/**
+ * POST /refuel/admin/members/:id/reject
+ * Reject a requested membership and transition to REMOVED.
+ */
+router.post(
+  "/:id/reject",
+  requireAuth,
+  requireRefuelAdmin,
+  async (req: RefuelAuthRequest, res: Response): Promise<void> => {
+    const memberId = String(req.params.id);
+    const admin = req.refuelMember!;
+    const user = req.user!;
+    const { reason } = req.body || {};
+
+    try {
+      const target = await prisma.refuelMember.findUnique({
+        where: { id: memberId },
+      });
+
+      if (!target) {
+        res.status(404).json({ error: "Member not found." });
+        return;
+      }
+
+      if (target.status !== "REQUESTED") {
+        res.status(400).json({
+          error: `Cannot reject member with status '${target.status}'. Only 'REQUESTED' members can be rejected.`,
+        });
+        return;
+      }
+
+      const updated = await prisma.$transaction(async (tx) => {
+        const rejected = await tx.refuelMember.update({
+          where: { id: target.id },
+          data: {
+            status: "REMOVED",
+            assignedToId: null,
+          },
+        });
+
+        await tx.refuelAuditEvent.create({
+          data: {
+            correlationId: crypto.randomUUID(),
+            actorMemberId: admin.id,
+            actorUserId: user.userId,
+            actorEmail: user.email,
+            actorRole: admin.role,
+            action: "MEMBERSHIP_REJECTED",
+            entityType: "MEMBER",
+            entityId: target.id,
+            targetMemberId: target.id,
+            reason: reason ? String(reason).trim() : null,
+            beforeState: { status: "REQUESTED" },
+            afterState: {
+              status: "REMOVED",
+            },
+          },
+        });
+
+        return rejected;
+      });
+
+      res.json({ success: true, message: "Membership request rejected.", member: updated });
+    } catch (err: any) {
+      console.error("[RejectMemberError]", err);
+      res.status(500).json({ error: "Failed to reject member request." });
     }
   }
 );

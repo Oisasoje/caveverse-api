@@ -115,6 +115,76 @@ router.post(
 );
 
 /**
+ * DELETE /refuel/members/request
+ * Authenticated user withdraws / cancels their pending Refuel membership request.
+ */
+router.delete(
+  "/request",
+  requireAuth,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    const user = req.user!;
+    try {
+      const existingMember = await prisma.refuelMember.findUnique({
+        where: { userId: user.userId },
+      });
+      if (!existingMember) {
+        res.status(404).json({ error: "No membership request found." });
+        return;
+      }
+      if (existingMember.status !== "REQUESTED") {
+        res.status(400).json({
+          error: `Cannot withdraw request: membership status is '${existingMember.status}'.`,
+        });
+        return;
+      }
+      await prisma.refuelMember.delete({
+        where: { id: existingMember.id },
+      });
+      res.json({
+        success: true,
+        message: "Membership request withdrawn successfully.",
+      });
+    } catch (err: any) {
+      console.error("[RefuelMembershipUnrequestError]", err);
+      res.status(500).json({ error: "Failed to withdraw membership request." });
+    }
+  }
+);
+
+router.post(
+  "/unrequest",
+  requireAuth,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    const user = req.user!;
+    try {
+      const existingMember = await prisma.refuelMember.findUnique({
+        where: { userId: user.userId },
+      });
+      if (!existingMember) {
+        res.status(404).json({ error: "No membership request found." });
+        return;
+      }
+      if (existingMember.status !== "REQUESTED") {
+        res.status(400).json({
+          error: `Cannot withdraw request: membership status is '${existingMember.status}'.`,
+        });
+        return;
+      }
+      await prisma.refuelMember.delete({
+        where: { id: existingMember.id },
+      });
+      res.json({
+        success: true,
+        message: "Membership request withdrawn successfully.",
+      });
+    } catch (err: any) {
+      console.error("[RefuelMembershipUnrequestError]", err);
+      res.status(500).json({ error: "Failed to withdraw membership request." });
+    }
+  }
+);
+
+/**
  * GET /refuel/members/me
  * Returns authenticated user's Refuel membership status.
  */
