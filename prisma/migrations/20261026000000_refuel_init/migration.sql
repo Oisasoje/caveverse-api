@@ -25,33 +25,7 @@ CREATE TYPE "RefuelNoticeKind" AS ENUM ('ANNOUNCEMENT', 'REVIEW_FEEDBACK', 'NUDG
 -- CreateEnum
 CREATE TYPE "RefuelAuditAction" AS ENUM ('MEMBERSHIP_REQUESTED', 'MEMBERSHIP_APPROVED', 'MEMBERSHIP_REJECTED', 'MEMBER_REMOVED', 'MEMBER_REASSIGNED', 'MEMBER_PROMOTED', 'MEMBER_DEMOTED', 'PROGRAMME_DRAFT_SAVED', 'PROGRAMME_PUBLISHED', 'PROGRAMME_START_DATE_CHANGED', 'SUBMISSION_CREATED', 'SUBMISSION_UPDATED', 'SUBMISSION_RESUBMITTED', 'CLOCK_IN_APPROVED', 'CLOCK_IN_REJECTED', 'CLOCK_IN_REOPENED', 'GRACE_GRANTED', 'NUDGE_SENT', 'ANNOUNCEMENT_POSTED');
 
--- CreateTable
-CREATE TABLE "Build" (
-    "id" TEXT NOT NULL,
-    "userId" TEXT NOT NULL,
-    "name" TEXT NOT NULL,
-    "industry" TEXT NOT NULL,
-    "icon" TEXT NOT NULL DEFAULT 'laptop',
-    "color" TEXT NOT NULL DEFAULT 'paper',
-    "stage" INTEGER NOT NULL DEFAULT 1,
-    "description" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "Build_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
-CREATE TABLE "BuildStep" (
-    "id" TEXT NOT NULL,
-    "buildId" TEXT NOT NULL,
-    "stepNumber" INTEGER NOT NULL,
-    "answer" TEXT NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "BuildStep_pkey" PRIMARY KEY ("id")
-);
 
 -- CreateTable
 CREATE TABLE "RefuelProgramme" (
@@ -329,14 +303,7 @@ CREATE TABLE "RefuelAuditEvent" (
     CONSTRAINT "RefuelAuditEvent_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex
-CREATE INDEX "Build_userId_idx" ON "Build"("userId");
 
--- CreateIndex
-CREATE INDEX "BuildStep_buildId_idx" ON "BuildStep"("buildId");
-
--- CreateIndex
-CREATE UNIQUE INDEX "BuildStep_buildId_stepNumber_key" ON "BuildStep"("buildId", "stepNumber");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "RefuelProgramme_activeVersionId_key" ON "RefuelProgramme"("activeVersionId");
@@ -476,11 +443,7 @@ CREATE INDEX "RefuelAuditEvent_action_idx" ON "RefuelAuditEvent"("action");
 -- CreateIndex
 CREATE INDEX "RefuelAuditEvent_correlationId_idx" ON "RefuelAuditEvent"("correlationId");
 
--- AddForeignKey
-ALTER TABLE "Build" ADD CONSTRAINT "Build_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- AddForeignKey
-ALTER TABLE "BuildStep" ADD CONSTRAINT "BuildStep_buildId_fkey" FOREIGN KEY ("buildId") REFERENCES "Build"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "RefuelProgramme" ADD CONSTRAINT "RefuelProgramme_activeVersionId_id_fkey" FOREIGN KEY ("activeVersionId", "id") REFERENCES "RefuelPublishedVersion"("id", "programmeId") ON DELETE RESTRICT ON UPDATE CASCADE;
