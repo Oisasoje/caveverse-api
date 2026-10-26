@@ -3,6 +3,7 @@ import { z } from "zod";
 import crypto from "crypto";
 import { requireAuth, AuthRequest } from "../../middleware/auth";
 import { prisma } from "../../lib/prisma";
+import { getInitials, getDeterministicAvatarColor } from "../../lib/refuelAvatar";
 
 const router = Router();
 
@@ -10,17 +11,6 @@ const JoinRequestSchema = z.object({
   initials: z.string().trim().max(4).optional(),
   color: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/, "Must be a valid hex color code").optional(),
 });
-
-function getInitials(name?: string | null, email?: string): string {
-  if (name && name.trim()) {
-    const parts = name.trim().split(/\s+/);
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
-    }
-    return parts[0].slice(0, 2).toUpperCase();
-  }
-  return (email?.slice(0, 2) ?? "ME").toUpperCase();
-}
 
 /**
  * POST /refuel/members/request
@@ -75,7 +65,9 @@ router.post(
       });
 
       const initials = parseResult.data.initials || getInitials(dbUser?.name, dbUser?.email || user.email);
-      const color = parseResult.data.color || "#8a7d9a";
+      const color =
+        parseResult.data.color ||
+        getDeterministicAvatarColor(user.email || dbUser?.email || user.userId);
 
       const created = await prisma.$transaction(async (tx) => {
         const member = await tx.refuelMember.create({
