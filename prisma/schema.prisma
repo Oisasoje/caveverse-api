@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -15,9 +12,9 @@ model User {
   email        String @unique
   passwordHash String
 
-  // Onboarding
+  // Onboarding. This is not a Refuel role.
   role        String?
-  interests   String[] // array of topic ids e.g. ["tech", "design"]
+  interests   String[]
   purpose     String?
   projectNote String?
   onboarded   Boolean  @default(false)
@@ -25,8 +22,9 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tokens RefreshToken[]
-  builds Build[]
+  tokens       RefreshToken[]
+  builds       Build[]
+  refuelMember RefuelMember?
 }
 
 model RefreshToken {
@@ -68,4 +66,422 @@ model BuildStep {
 
   @@unique([buildId, stepNumber])
   @@index([buildId])
+}
+
+// ==========================================
+// REFUEL
+// ==========================================
+
+enum RefuelRole {
+  MEMBER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum RefuelMembershipStatus {
+  REQUESTED
+  ACTIVE
+  REMOVED
+}
+
+enum RefuelWeekday {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum RefuelActivityType {
+  PRAYER
+  BIBLE
+  LISTENING
+  READING
+  REFLECTION
+  DISCUSSION
+  ASSIGNMENT
+  ATTENDANCE
+  OTHER
+}
+
+enum RefuelCompletionMethod {
+  TICK
+  TEXT
+  LINK
+}
+
+enum RefuelSubmissionStatus {
+  DRAFT
+  PENDING
+  VALID
+  INVALID
+}
+
+enum RefuelDecisionType {
+  APPROVE
+  REJECT
+  REOPEN
+}
+
+enum RefuelNoticeKind {
+  ANNOUNCEMENT
+  REVIEW_FEEDBACK
+  NUDGE
+}
+
+enum RefuelAuditAction {
+  MEMBERSHIP_REQUESTED
+  MEMBERSHIP_APPROVED
+  MEMBERSHIP_REJECTED
+  MEMBER_REMOVED
+  MEMBER_REASSIGNED
+  MEMBER_PROMOTED
+  MEMBER_DEMOTED
+  PROGRAMME_DRAFT_SAVED
+  PROGRAMME_PUBLISHED
+  PROGRAMME_START_DATE_CHANGED
+  SUBMISSION_CREATED
+  SUBMISSION_UPDATED
+  SUBMISSION_RESUBMITTED
+  CLOCK_IN_APPROVED
+  CLOCK_IN_REJECTED
+  CLOCK_IN_REOPENED
+  GRACE_GRANTED
+  NUDGE_SENT
+  ANNOUNCEMENT_POSTED
+}
+
+model RefuelProgramme {
+  id              String                   @id @default("refuel-root")
+  activeVersionId String?                  @unique
+  activeVersion   RefuelPublishedVersion?  @relation("ActiveVersion", fields: [activeVersionId, id], references: [id, programmeId], onDelete: Restrict)
+  versions        RefuelPublishedVersion[]
+  draft           RefuelDraftProgramme?
+  versionLock     Int                      @default(1)
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  @@unique([activeVersionId, id])
+}
+
+model RefuelDraftProgramme {
+  id                 String            @id @default(cuid())
+  programmeId        String            @unique
+  programme          RefuelProgramme   @relation(fields: [programmeId], references: [id], onDelete: Restrict)
+  programmeStartDate String?
+  weekStartDay       RefuelWeekday     @default(MONDAY)
+  weeks              RefuelDraftWeek[]
+  updatedById        String?
+  updatedAt          DateTime          @updatedAt
+}
+
+model RefuelDraftWeek {
+  id         String               @id @default(cuid())
+  draftId    String
+  draft      RefuelDraftProgramme @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  weekNumber Int
+  title      String
+  days       RefuelDraftDay[]
+
+  @@unique([draftId, weekNumber])
+  @@index([draftId])
+}
+
+model RefuelDraftDay {
+  id         String                @id @default(cuid())
+  weekId     String
+  week       RefuelDraftWeek       @relation(fields: [weekId], references: [id], onDelete: Cascade)
+  dayKey     String
+  name       String
+  weekday    RefuelWeekday
+  orderIndex Int                   @default(0)
+  activities RefuelDraftActivity[]
+
+  @@unique([weekId, dayKey])
+  @@index([weekId])
+}
+
+model RefuelDraftActivity {
+  id               String                 @id @default(cuid())
+  dayId            String
+  day              RefuelDraftDay         @relation(fields: [dayId], references: [id], onDelete: Cascade)
+  title            String
+  detail           String?
+  activityType     RefuelActivityType     @default(OTHER)
+  completionMethod RefuelCompletionMethod @default(TICK)
+  required         Boolean                @default(true)
+  orderIndex       Int                    @default(0)
+  resources        RefuelDraftResource[]
+
+  @@index([dayId])
+}
+
+model RefuelDraftResource {
+  id         String              @id @default(cuid())
+  activityId String
+  activity   RefuelDraftActivity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  title      String
+  url        String              @default("")
+
+  @@index([activityId])
+}
+
+model RefuelPublishedVersion {
+  id                  String                @id @default(cuid())
+  programmeId         String
+  programme           RefuelProgramme       @relation(fields: [programmeId], references: [id], onDelete: Restrict)
+  versionNumber       Int
+  programmeStartDate  String
+  weekStartDay        RefuelWeekday         @default(MONDAY)
+  // Minutes after the next Africa/Lagos midnight. 0 = midnight. 300 = 05:00.
+  cutoffBufferMinutes Int                   @default(0)
+  timezone            String                @default("Africa/Lagos")
+  publishedAt         DateTime              @default(now())
+  publishedById       String
+  weeks               RefuelPublishedWeek[]
+  activeForProgramme  RefuelProgramme?      @relation("ActiveVersion")
+
+  @@unique([id, programmeId])
+  @@unique([programmeId, versionNumber])
+  @@index([programmeId])
+}
+
+model RefuelPublishedWeek {
+  id                 String                 @id @default(cuid())
+  programmeVersionId String
+  programmeVersion   RefuelPublishedVersion @relation(fields: [programmeVersionId], references: [id], onDelete: Restrict)
+  weekNumber         Int
+  title              String
+  days               RefuelPublishedDay[]
+
+  @@unique([id, programmeVersionId])
+  @@unique([programmeVersionId, weekNumber])
+  @@index([programmeVersionId])
+}
+
+model RefuelPublishedDay {
+  id                 String                    @id @default(cuid())
+  programmeVersionId String
+  weekId             String
+  week               RefuelPublishedWeek       @relation(fields: [weekId, programmeVersionId], references: [id, programmeVersionId], onDelete: Restrict)
+  dayKey             String
+  name               String
+  weekday            RefuelWeekday
+  calendarDate       String
+  orderIndex         Int                       @default(0)
+  activities         RefuelPublishedActivity[]
+  submissions        RefuelSubmission[]
+  graceRecords       RefuelGraceRecord[]
+
+  @@unique([id, programmeVersionId])
+  @@unique([weekId, dayKey])
+  @@unique([programmeVersionId, calendarDate])
+  @@index([programmeVersionId])
+}
+
+model RefuelPublishedActivity {
+  id               String                    @id @default(cuid())
+  dayId            String
+  day              RefuelPublishedDay        @relation(fields: [dayId], references: [id], onDelete: Restrict)
+  title            String
+  detail           String?
+  activityType     RefuelActivityType        @default(OTHER)
+  completionMethod RefuelCompletionMethod    @default(TICK)
+  required         Boolean                   @default(true)
+  orderIndex       Int                       @default(0)
+  resources        RefuelPublishedResource[]
+  answers          RefuelAnswer[]
+
+  @@unique([id, dayId])
+  @@index([dayId])
+}
+
+model RefuelPublishedResource {
+  id         String                  @id @default(cuid())
+  activityId String
+  activity   RefuelPublishedActivity @relation(fields: [activityId], references: [id], onDelete: Restrict)
+  title      String
+  url        String                  @default("")
+
+  @@index([activityId])
+}
+
+model RefuelMember {
+  id              String                 @id @default(cuid())
+  userId          String                 @unique
+  user            User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role            RefuelRole             @default(MEMBER)
+  status          RefuelMembershipStatus @default(REQUESTED)
+  assignedToId    String?
+  assignedTo      RefuelMember?          @relation("AdminAssignments", fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedMembers RefuelMember[]         @relation("AdminAssignments")
+
+  initials  String
+  color     String   @default("#8a7d9a")
+  joinedAt  DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  submissions     RefuelSubmission[]
+  decisions       RefuelDecision[]    @relation("AdminDecisions")
+  graceGranted    RefuelGraceRecord[] @relation("AdminGraceGrants")
+  graceReceived   RefuelGraceRecord[] @relation("MemberGrace")
+  readNotices       RefuelNoticeRead[]
+  targetedNotices   RefuelNotice[]           @relation("TargetedMemberNotices")
+  authoredNotices   RefuelNotice[]           @relation("AuthoredNotices")
+  pushSubscriptions RefuelPushSubscription[]
+
+  @@index([assignedToId])
+  @@index([role, status])
+}
+
+model RefuelSubmission {
+  id                 String                     @id @default(cuid())
+  memberId           String
+  member             RefuelMember               @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  programmeVersionId String
+  dayId              String
+  day                RefuelPublishedDay         @relation(fields: [dayId, programmeVersionId], references: [id, programmeVersionId], onDelete: Restrict)
+  dayKey             String
+  calendarDate       String
+  revisionNumber     Int                        @default(1)
+  status             RefuelSubmissionStatus     @default(PENDING)
+  isLate             Boolean                    @default(false)
+  checkedIds         String[]
+  answers            RefuelAnswer[]
+  revisions          RefuelSubmissionRevision[]
+  decisions          RefuelDecision[]
+  submittedAt        DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  @@unique([id, dayId])
+  @@unique([memberId, dayId])
+  @@index([memberId])
+  @@index([status])
+  @@index([calendarDate])
+}
+
+model RefuelSubmissionRevision {
+  id              String           @id @default(cuid())
+  submissionId    String
+  submission      RefuelSubmission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  revisionNumber  Int
+  checkedIds      String[]
+  answersSnapshot Json
+  isLate          Boolean          @default(false)
+  submissionNote  String?
+  submittedAt     DateTime         @default(now())
+
+  @@unique([submissionId, revisionNumber])
+  @@index([submissionId])
+}
+
+model RefuelAnswer {
+  id           String                  @id @default(cuid())
+  submissionId String
+  activityId   String
+  dayId        String
+  submission   RefuelSubmission        @relation(fields: [submissionId, dayId], references: [id, dayId], onDelete: Restrict)
+  activity     RefuelPublishedActivity @relation(fields: [activityId, dayId], references: [id, dayId], onDelete: Restrict)
+  value        String
+
+  @@unique([submissionId, activityId])
+  @@index([submissionId])
+}
+
+model RefuelDecision {
+  id                     String             @id @default(cuid())
+  submissionId           String
+  submission             RefuelSubmission   @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  reviewedRevisionNumber Int
+  decision               RefuelDecisionType
+  reviewerId             String
+  reviewer               RefuelMember       @relation("AdminDecisions", fields: [reviewerId], references: [id], onDelete: Restrict)
+  reason                 String?
+  createdAt              DateTime           @default(now())
+
+  @@index([submissionId])
+}
+
+model RefuelGraceRecord {
+  id          String             @id @default(cuid())
+  memberId    String
+  member      RefuelMember       @relation("MemberGrace", fields: [memberId], references: [id], onDelete: Restrict)
+  dayId       String
+  day         RefuelPublishedDay @relation(fields: [dayId], references: [id], onDelete: Restrict)
+  grantedById String
+  grantedBy   RefuelMember       @relation("AdminGraceGrants", fields: [grantedById], references: [id], onDelete: Restrict)
+  reason      String
+  grantedAt   DateTime           @default(now())
+
+  @@unique([memberId, dayId])
+  @@index([memberId])
+}
+
+model RefuelNotice {
+  id             String             @id @default(cuid())
+  kind           RefuelNoticeKind   @default(ANNOUNCEMENT)
+  title          String
+  body           String
+  authorId       String
+  author         RefuelMember       @relation("AuthoredNotices", fields: [authorId], references: [id], onDelete: Restrict)
+  targetMemberId String?
+  targetMember   RefuelMember?      @relation("TargetedMemberNotices", fields: [targetMemberId], references: [id], onDelete: Restrict)
+  metadata       Json?
+  reads          RefuelNoticeRead[]
+  createdAt      DateTime           @default(now())
+
+  @@index([targetMemberId])
+  @@index([kind])
+}
+
+model RefuelNoticeRead {
+  id       String       @id @default(cuid())
+  noticeId String
+  notice   RefuelNotice @relation(fields: [noticeId], references: [id], onDelete: Cascade)
+  memberId String
+  member   RefuelMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  readAt   DateTime     @default(now())
+
+  @@unique([noticeId, memberId])
+}
+
+model RefuelAuditEvent {
+  id                 String            @id @default(cuid())
+  correlationId      String
+  actorMemberId      String?
+  actorUserId        String?
+  actorEmail         String?
+  actorRole          String
+  action             RefuelAuditAction
+  entityType         String
+  entityId           String
+  targetMemberId     String?
+  programmeVersionId String?
+  dayId              String?
+  revisionNumber     Int?
+  reason             String?
+  beforeState        Json?
+  afterState         Json?
+  metadata           Json?
+  createdAt          DateTime          @default(now())
+
+  @@index([targetMemberId])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([correlationId])
+}
+
+model RefuelPushSubscription {
+  id        String       @id @default(cuid())
+  memberId  String
+  member    RefuelMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  endpoint  String       @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime     @default(now())
+
+  @@index([memberId])
 }

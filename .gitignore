@@ -2,3 +2,4 @@
 dist/
 .env
 *.log
+REFUEL_BACKEND_IMPLEMENTATION_PLAN.md
