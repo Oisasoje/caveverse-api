@@ -2,7 +2,11 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import crypto from "crypto";
 import { requireAuth } from "../../../middleware/auth";
-import { requireRefuelAdmin, RefuelAuthRequest } from "../../../middleware/refuelAuth";
+import {
+  requireRefuelAdmin,
+  requireRefuelSuperAdmin,
+  RefuelAuthRequest,
+} from "../../../middleware/refuelAuth";
 import { prisma } from "../../../lib/prisma";
 import { isMonday, calculateDayCalendarDate } from "../../../lib/refuelDates";
 import {
@@ -833,6 +837,212 @@ router.post(
     } catch (err: any) {
       console.error("[RefuelSaveDraftError]", err);
       res.status(500).json({ error: "Failed to save draft programme." });
+    }
+  }
+);
+
+const UnpublishWeekSchema = z.object({
+  weekNumber: z.number().int().positive().optional(),
+  weekId: z.string().optional(),
+});
+
+/**
+ * POST /refuel/admin/programme/unpublish-week
+ * Unpublishes a specific week for SUPER_ADMINs.
+ * Removes the week from the active published version snapshot.
+ */
+router.post(
+  "/programme/unpublish-week",
+  requireAuth,
+  requireRefuelSuperAdmin,
+  async (req: RefuelAuthRequest, res: Response): Promise<void> => {
+    const parseResult = UnpublishWeekSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({
+        error: "Invalid unpublish payload",
+        details: parseResult.error.format(),
+      });
+      return;
+    }
+
+    const { weekNumber, weekId } = parseResult.data;
+    if (weekNumber === undefined && !weekId) {
+      res.status(400).json({ error: "Either weekNumber or weekId must be provided." });
+      return;
+    }
+
+    const member = req.refuelMember!;
+    const user = req.user!;
+
+    try {
+      const rootProg = await prisma.refuelProgramme.findUnique({
+        where: { id: "refuel-root" },
+        include: {
+          activeVersion: {
+            include: {
+              weeks: {
+                orderBy: { weekNumber: "asc" },
+                include: {
+                  days: {
+                    orderBy: { orderIndex: "asc" },
+                    include: {
+                      activities: {
+                        orderBy: { orderIndex: "asc" },
+                        include: { resources: true },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!rootProg || !rootProg.activeVersion) {
+        res.status(400).json({ error: "No active published programme version to unpublish from." });
+        return;
+      }
+
+      const activeWeeks = rootProg.activeVersion.weeks;
+      const targetWeek = activeWeeks.find(
+        (w) => (weekId && w.id === weekId) || (weekNumber !== undefined && w.weekNumber === weekNumber)
+      );
+
+      if (!targetWeek) {
+        res.status(404).json({ error: "Week not found in the active published programme." });
+        return;
+      }
+
+      const remainingWeeks = activeWeeks.filter((w) => w.id !== targetWeek.id);
+
+      await prisma.$transaction(
+        async (tx) => {
+          if (remainingWeeks.length === 0) {
+            // No published weeks remain -> clear activeVersionId
+            await tx.refuelProgramme.update({
+              where: { id: rootProg.id },
+              data: {
+                activeVersionId: null,
+                versionLock: { increment: 1 },
+              },
+            });
+          } else {
+            // Create a new published version snapshot with remaining weeks
+            const maxVer = await tx.refuelPublishedVersion.aggregate({
+              where: { programmeId: rootProg.id },
+              _max: { versionNumber: true },
+            });
+            const nextVersionNumber =
+              Math.max(
+                rootProg.activeVersion?.versionNumber ?? 0,
+                maxVer._max.versionNumber ?? 0
+              ) + 1;
+            const newPublishedVersionId = crypto.randomUUID();
+
+            await tx.refuelPublishedVersion.create({
+              data: {
+                id: newPublishedVersionId,
+                programmeId: rootProg.id,
+                publishedById: member.id,
+                versionNumber: nextVersionNumber,
+                programmeStartDate: rootProg.activeVersion!.programmeStartDate,
+                weekStartDay: rootProg.activeVersion!.weekStartDay,
+              },
+            });
+
+            for (const rw of remainingWeeks) {
+              const newWeekId = crypto.randomUUID();
+              await tx.refuelPublishedWeek.create({
+                data: {
+                  id: newWeekId,
+                  programmeVersionId: newPublishedVersionId,
+                  weekNumber: rw.weekNumber,
+                  title: rw.title,
+                },
+              });
+
+              for (const rd of rw.days) {
+                const newDayId = crypto.randomUUID();
+                await tx.refuelPublishedDay.create({
+                  data: {
+                    id: newDayId,
+                    programmeVersionId: newPublishedVersionId,
+                    weekId: newWeekId,
+                    dayKey: rd.dayKey,
+                    name: rd.name,
+                    weekday: rd.weekday,
+                    orderIndex: rd.orderIndex,
+                    calendarDate: rd.calendarDate,
+                  },
+                });
+
+                for (const ra of rd.activities) {
+                  const newActId = crypto.randomUUID();
+                  await tx.refuelPublishedActivity.create({
+                    data: {
+                      id: newActId,
+                      programmeVersionId: newPublishedVersionId,
+                      dayId: newDayId,
+                      title: ra.title,
+                      detail: ra.detail,
+                      activityType: ra.activityType,
+                      completionMethod: ra.completionMethod,
+                      required: ra.required,
+                      orderIndex: ra.orderIndex,
+                      resources: {
+                        create: ra.resources.map((r) => ({
+                          title: r.title,
+                          url: r.url,
+                        })),
+                      },
+                    },
+                  });
+                }
+              }
+            }
+
+            await tx.refuelProgramme.update({
+              where: { id: rootProg.id },
+              data: {
+                activeVersionId: newPublishedVersionId,
+                versionLock: { increment: 1 },
+              },
+            });
+          }
+
+          // Audit log
+          await tx.refuelAuditEvent.create({
+            data: {
+              correlationId: crypto.randomUUID(),
+              actorMemberId: member.id,
+              actorUserId: user.userId,
+              actorEmail: user.email,
+              actorRole: member.role,
+              action: "PROGRAMME_PUBLISHED",
+              entityType: "PROGRAMME",
+              entityId: rootProg.id,
+              programmeVersionId: remainingWeeks.length > 0 ? rootProg.activeVersion!.id : null,
+              afterState: {
+                actionDetail: "WEEK_UNPUBLISHED",
+                unpublishedWeekNumber: targetWeek.weekNumber,
+                unpublishedWeekId: targetWeek.id,
+                remainingWeeksCount: remainingWeeks.length,
+              },
+            },
+          });
+        },
+        { timeout: 60000, maxWait: 15000 }
+      );
+
+      res.status(200).json({
+        success: true,
+        unpublishedWeekNumber: targetWeek.weekNumber,
+        unpublishedWeekId: targetWeek.id,
+      });
+    } catch (err: any) {
+      console.error("[RefuelUnpublishError]", err);
+      res.status(500).json({ error: "Failed to unpublish week." });
     }
   }
 );

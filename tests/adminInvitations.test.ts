@@ -237,21 +237,77 @@ async function runInvitationTests() {
   assert.strictEqual(revokeCheck?.status, RefuelInvitationStatus.REVOKED);
   console.log("  ✓ Invitation revoked successfully and marked unusable");
 
+  // 9. Test: Super Admin invitation requires email and grants SUPER_ADMIN role upon redemption
+  console.log("Test 9: Super Admin invitation grants SUPER_ADMIN role upon redemption");
+  const superAdminTargetEmail = `newsuperadmin_${testSuffix}@example.com`;
+  const superAdminToken = crypto.randomBytes(32).toString("hex");
+
+  const superAdminInv = await prisma.refuelAdminInvitation.create({
+    data: {
+      token: superAdminToken,
+      email: superAdminTargetEmail,
+      role: RefuelRole.SUPER_ADMIN,
+      createdById: superAdminMember.id,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      status: RefuelInvitationStatus.PENDING,
+    },
+  });
+
+  assert.strictEqual(superAdminInv.role, RefuelRole.SUPER_ADMIN);
+  assert.strictEqual(superAdminInv.email, superAdminTargetEmail);
+
+  const newSuperAdminUser = await prisma.user.create({
+    data: {
+      name: `New Super Admin ${testSuffix}`,
+      email: superAdminTargetEmail,
+      passwordHash: "hash123",
+      onboarded: true,
+    },
+  });
+
+  const newSuperAdminMember = await prisma.$transaction(async (tx) => {
+    await tx.refuelAdminInvitation.updateMany({
+      where: { id: superAdminInv.id },
+      data: { status: RefuelInvitationStatus.REDEEMED, redeemedAt: new Date() },
+    });
+
+    const created = await tx.refuelMember.create({
+      data: {
+        userId: newSuperAdminUser.id,
+        role: superAdminInv.role,
+        status: RefuelMembershipStatus.ACTIVE,
+        initials: "NSA",
+        color: "#9333EA",
+        assignedToId: null,
+      },
+    });
+
+    await tx.refuelAdminInvitation.update({
+      where: { id: superAdminInv.id },
+      data: { redeemedById: created.id },
+    });
+
+    return created;
+  });
+
+  assert.strictEqual(newSuperAdminMember.role, RefuelRole.SUPER_ADMIN);
+  console.log("  ✓ Super Admin invitation successfully elevated user to SUPER_ADMIN role");
+
   // Cleanup test artifacts
   console.log("Cleaning up test records...");
   await prisma.refuelAdminInvitation.deleteMany({
     where: {
-      id: { in: [generalInvitation.id, restrictedInvitation.id, toRevoke.id] },
+      id: { in: [generalInvitation.id, restrictedInvitation.id, toRevoke.id, superAdminInv.id] },
     },
   });
   await prisma.refuelMember.deleteMany({
     where: {
-      id: { in: [superAdminMember.id, existingMember.id, newAdminMember.id] },
+      id: { in: [superAdminMember.id, existingMember.id, newAdminMember.id, newSuperAdminMember.id] },
     },
   });
   await prisma.user.deleteMany({
     where: {
-      id: { in: [superAdminUser.id, existingMemberUser.id, newUser.id] },
+      id: { in: [superAdminUser.id, existingMemberUser.id, newUser.id, newSuperAdminUser.id] },
     },
   });
 
