@@ -21,12 +21,20 @@ export function getPrisma(): PrismaClient {
   const pool = new Pool({
     connectionString,
     ssl: connectionString.includes("sslmode=require") ? { rejectUnauthorized: false } : undefined,
+    max: 10,
+    idleTimeoutMillis: 20000,
+    connectionTimeoutMillis: 15000,
+    keepAlive: true,
   });
   const adapter = new PrismaPg(pool);
   globalForPrisma.pool = pool;
 
   globalForPrisma.prisma = new PrismaClient({
     adapter,
+    transactionOptions: {
+      maxWait: 15000,
+      timeout: 60000,
+    },
     log: process.env.NODE_ENV === "development" ? ["query", "error", "warn"] : ["error"],
   });
 

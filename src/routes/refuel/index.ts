@@ -8,6 +8,8 @@ import submissionsRoute from "./submissions";
 import membersRoute from "./members";
 import noticesRoute from "./notices";
 import pushRoute from "./push";
+import invitationsRoute from "./invitations";
+import adminInvitationsRoute from "./admin/invitations";
 import { prisma } from "../../lib/prisma";
 
 const router = Router();
@@ -18,12 +20,14 @@ router.use("/submissions", submissionsRoute);
 router.use("/members", membersRoute);
 router.use("/notices", noticesRoute);
 router.use("/push", pushRoute);
+router.use("/invitations", invitationsRoute);
 
 // Admin Refuel Endpoints
 router.use("/admin", publishRoute);
 router.use("/admin/reviews", reviewsRoute);
 router.use("/admin/grace", graceRoute);
 router.use("/admin/members", adminMembersRoute);
+router.use("/admin/invitations", adminInvitationsRoute);
 
 // GET /refuel/programme/active - Read active published programme
 router.get("/programme/active", async (_req, res) => {
@@ -79,6 +83,7 @@ router.get("/programme/draft", async (_req, res) => {
     const programme = await prisma.refuelProgramme.findUnique({
       where: { id: "refuel-root" },
       include: {
+        activeVersion: true,
         draft: {
           include: {
             weeks: {
@@ -105,6 +110,9 @@ router.get("/programme/draft", async (_req, res) => {
     res.json({
       programmeId: programme?.id ?? "refuel-root",
       versionLock: programme?.versionLock ?? 1,
+      activeVersionId: programme?.activeVersionId ?? null,
+      activeVersion: programme?.activeVersion ?? null,
+      isPublished: Boolean(programme?.activeVersionId),
       draft: programme?.draft ?? null,
     });
   } catch (err: any) {
@@ -114,4 +122,3 @@ router.get("/programme/draft", async (_req, res) => {
 });
 
 export default router;
-

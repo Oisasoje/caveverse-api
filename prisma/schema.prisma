@@ -151,6 +151,15 @@ enum RefuelAuditAction {
   GRACE_GRANTED
   NUDGE_SENT
   ANNOUNCEMENT_POSTED
+  ADMIN_INVITATION_CREATED
+  ADMIN_INVITATION_REVOKED
+  ADMIN_INVITATION_REDEEMED
+}
+
+enum RefuelInvitationStatus {
+  PENDING
+  REDEEMED
+  REVOKED
 }
 
 model RefuelProgramme {
@@ -327,10 +336,13 @@ model RefuelMember {
   decisions       RefuelDecision[]    @relation("AdminDecisions")
   graceGranted    RefuelGraceRecord[] @relation("AdminGraceGrants")
   graceReceived   RefuelGraceRecord[] @relation("MemberGrace")
-  readNotices       RefuelNoticeRead[]
+  readNotices        RefuelNoticeRead[]
+  noticeReactions    RefuelNoticeReaction[]
   targetedNotices   RefuelNotice[]           @relation("TargetedMemberNotices")
   authoredNotices   RefuelNotice[]           @relation("AuthoredNotices")
-  pushSubscriptions RefuelPushSubscription[]
+  pushSubscriptions  RefuelPushSubscription[]
+  createdInvitations RefuelAdminInvitation[]  @relation("CreatedInvitations")
+  redeemedInvitation RefuelAdminInvitation?   @relation("RedeemedInvitation")
 
   @@index([assignedToId])
   @@index([role, status])
@@ -430,6 +442,7 @@ model RefuelNotice {
   targetMember   RefuelMember?      @relation("TargetedMemberNotices", fields: [targetMemberId], references: [id], onDelete: Restrict)
   metadata       Json?
   reads          RefuelNoticeRead[]
+  reactions      RefuelNoticeReaction[]
   createdAt      DateTime           @default(now())
 
   @@index([targetMemberId])
@@ -445,6 +458,19 @@ model RefuelNoticeRead {
   readAt   DateTime     @default(now())
 
   @@unique([noticeId, memberId])
+}
+
+model RefuelNoticeReaction {
+  id        String       @id @default(cuid())
+  noticeId  String
+  notice    RefuelNotice @relation(fields: [noticeId], references: [id], onDelete: Cascade)
+  memberId  String
+  member    RefuelMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  emoji     String
+  createdAt DateTime     @default(now())
+
+  @@unique([noticeId, memberId, emoji])
+  @@index([noticeId])
 }
 
 model RefuelAuditEvent {
@@ -484,4 +510,25 @@ model RefuelPushSubscription {
   createdAt DateTime     @default(now())
 
   @@index([memberId])
+}
+
+model RefuelAdminInvitation {
+  id           String                 @id @default(cuid())
+  token        String                 @unique
+  email        String?
+  role         RefuelRole             @default(ADMIN)
+  status       RefuelInvitationStatus @default(PENDING)
+  createdById  String
+  createdBy    RefuelMember           @relation("CreatedInvitations", fields: [createdById], references: [id], onDelete: Restrict)
+  redeemedById String?                @unique
+  redeemedBy   RefuelMember?          @relation("RedeemedInvitation", fields: [redeemedById], references: [id], onDelete: SetNull)
+  redeemedAt   DateTime?
+  expiresAt    DateTime
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+
+  @@index([token])
+  @@index([status])
+  @@index([createdById])
+  @@index([role])
 }

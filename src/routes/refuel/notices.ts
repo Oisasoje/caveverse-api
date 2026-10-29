@@ -13,6 +13,91 @@ import { sendPushToMember, sendPushToAllMembers } from "../../lib/webPush";
 
 const router = Router();
 
+let reactionTableReady: Promise<void> | null = null;
+
+function ensureNoticeReactionTable(): Promise<void> {
+  if (!reactionTableReady) {
+    reactionTableReady = (async () => {
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "RefuelNoticeReaction" (
+          "id" TEXT NOT NULL,
+          "noticeId" TEXT NOT NULL,
+          "memberId" TEXT NOT NULL,
+          "emoji" TEXT NOT NULL,
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "RefuelNoticeReaction_pkey" PRIMARY KEY ("id")
+        );
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE INDEX IF NOT EXISTS "RefuelNoticeReaction_noticeId_idx"
+        ON "RefuelNoticeReaction"("noticeId");
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE UNIQUE INDEX IF NOT EXISTS "RefuelNoticeReaction_noticeId_memberId_emoji_key"
+        ON "RefuelNoticeReaction"("noticeId", "memberId", "emoji");
+      `);
+      await prisma.$executeRawUnsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'RefuelNoticeReaction_noticeId_fkey'
+          ) THEN
+            ALTER TABLE "RefuelNoticeReaction"
+              ADD CONSTRAINT "RefuelNoticeReaction_noticeId_fkey"
+              FOREIGN KEY ("noticeId") REFERENCES "RefuelNotice"("id")
+              ON DELETE CASCADE ON UPDATE CASCADE;
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'RefuelNoticeReaction_memberId_fkey'
+          ) THEN
+            ALTER TABLE "RefuelNoticeReaction"
+              ADD CONSTRAINT "RefuelNoticeReaction_memberId_fkey"
+              FOREIGN KEY ("memberId") REFERENCES "RefuelMember"("id")
+              ON DELETE CASCADE ON UPDATE CASCADE;
+          END IF;
+        END $$;
+      `);
+    })().catch((err) => {
+      reactionTableReady = null;
+      console.error("[EnsureNoticeReactionTableError]", err);
+    });
+  }
+  return reactionTableReady;
+}
+
+// Run migration check immediately when backend route module loads
+ensureNoticeReactionTable();
+
+type RawReactionRow = {
+  id: string;
+  noticeId: string;
+  memberId: string;
+  emoji: string;
+  createdAt: Date;
+};
+
+function summarizeReactions(rows: RawReactionRow[], currentMemberId: string) {
+  const byEmoji = new Map<
+    string,
+    { emoji: string; count: number; reacted: boolean; memberIds: string[] }
+  >();
+  for (const r of rows) {
+    const existing = byEmoji.get(r.emoji) || {
+      emoji: r.emoji,
+      count: 0,
+      reacted: false,
+      memberIds: [],
+    };
+    existing.count += 1;
+    existing.memberIds.push(r.memberId);
+    if (r.memberId === currentMemberId) {
+      existing.reacted = true;
+    }
+    byEmoji.set(r.emoji, existing);
+  }
+  return Array.from(byEmoji.values());
+}
+
 /**
  * GET /refuel/notices
  * Fetch announcements and personalized notices targeted at the authenticated member.
@@ -25,6 +110,8 @@ router.get(
     const member = req.refuelMember!;
 
     try {
+      await ensureNoticeReactionTable();
+
       const notices = await prisma.refuelNotice.findMany({
         where: {
           OR: [
@@ -35,7 +122,12 @@ router.get(
         orderBy: { createdAt: "desc" },
         include: {
           author: {
-            select: { id: true, initials: true, color: true },
+            select: {
+              id: true,
+              initials: true,
+              color: true,
+              user: { select: { name: true } },
+            },
           },
           reads: {
             where: { memberId: member.id },
@@ -43,6 +135,24 @@ router.get(
           },
         },
       });
+
+      const noticeIds = notices.map((n) => n.id);
+      const reactionRows: RawReactionRow[] =
+        noticeIds.length > 0
+          ? await prisma.$queryRaw<RawReactionRow[]>`
+              SELECT "id", "noticeId", "memberId", "emoji", "createdAt"
+              FROM "RefuelNoticeReaction"
+              WHERE "noticeId" = ANY(${noticeIds}::text[])
+              ORDER BY "createdAt" ASC
+            `
+          : [];
+
+      const reactionsByNotice = new Map<string, RawReactionRow[]>();
+      for (const row of reactionRows) {
+        const list = reactionsByNotice.get(row.noticeId) || [];
+        list.push(row);
+        reactionsByNotice.set(row.noticeId, list);
+      }
 
       const formatted = notices.map((n) => ({
         id: n.id,
@@ -54,6 +164,13 @@ router.get(
         metadata: n.metadata,
         isRead: n.reads.length > 0,
         readAt: n.reads[0]?.readAt ?? null,
+        reactions:
+          n.kind === RefuelNoticeKind.ANNOUNCEMENT
+            ? summarizeReactions(
+                reactionsByNotice.get(n.id) || [],
+                member.id,
+              )
+            : [],
         createdAt: n.createdAt,
       }));
 
@@ -61,6 +178,102 @@ router.get(
     } catch (err: any) {
       console.error("[GetNoticesError]", err);
       res.status(500).json({ error: "Failed to load notices." });
+    }
+  }
+);
+
+const ToggleReactionSchema = z.object({
+  emoji: z.string().trim().min(1, "Emoji is required").max(16),
+});
+
+/**
+ * POST /refuel/notices/:id/reactions
+ * Toggle an emoji reaction on a notice for the authenticated member.
+ */
+router.post(
+  "/:id/reactions",
+  requireAuth,
+  requireRefuelMember,
+  async (req: RefuelAuthRequest, res: Response): Promise<void> => {
+    const noticeId = String(req.params.id);
+    const member = req.refuelMember!;
+
+    const parsed = ToggleReactionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Invalid reaction payload",
+        details: parsed.error.format(),
+      });
+      return;
+    }
+
+    const { emoji } = parsed.data;
+
+    try {
+      await ensureNoticeReactionTable();
+
+      const notice = await prisma.refuelNotice.findUnique({
+        where: { id: noticeId },
+      });
+
+      if (
+        !notice ||
+        (notice.targetMemberId && notice.targetMemberId !== member.id)
+      ) {
+        res.status(404).json({ error: "Notice not found." });
+        return;
+      }
+
+      if (notice.kind !== RefuelNoticeKind.ANNOUNCEMENT) {
+        res
+          .status(400)
+          .json({ error: "Reactions are only supported on announcements." });
+        return;
+      }
+
+      const existing = await prisma.$queryRaw<{ id: string }[]>`
+        SELECT "id"
+        FROM "RefuelNoticeReaction"
+        WHERE "noticeId" = ${noticeId}
+          AND "memberId" = ${member.id}
+          AND "emoji" = ${emoji}
+        LIMIT 1
+      `;
+
+      let reacted: boolean;
+      if (existing.length > 0) {
+        await prisma.$executeRaw`
+          DELETE FROM "RefuelNoticeReaction"
+          WHERE "id" = ${existing[0].id}
+        `;
+        reacted = false;
+      } else {
+        const newId = crypto.randomUUID();
+        await prisma.$executeRaw`
+          INSERT INTO "RefuelNoticeReaction" ("id", "noticeId", "memberId", "emoji", "createdAt")
+          VALUES (${newId}, ${noticeId}, ${member.id}, ${emoji}, NOW())
+          ON CONFLICT ("noticeId", "memberId", "emoji") DO NOTHING
+        `;
+        reacted = true;
+      }
+
+      const updatedRows = await prisma.$queryRaw<RawReactionRow[]>`
+        SELECT "id", "noticeId", "memberId", "emoji", "createdAt"
+        FROM "RefuelNoticeReaction"
+        WHERE "noticeId" = ${noticeId}
+        ORDER BY "createdAt" ASC
+      `;
+
+      res.json({
+        success: true,
+        noticeId,
+        emoji,
+        reacted,
+        reactions: summarizeReactions(updatedRows, member.id),
+      });
+    } catch (err: any) {
+      console.error("[ToggleNoticeReactionError]", err);
+      res.status(500).json({ error: "Failed to toggle notice reaction." });
     }
   }
 );
